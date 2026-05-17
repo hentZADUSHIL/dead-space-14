@@ -18,6 +18,7 @@ using Content.Shared.Popups;
 using Content.Shared.Strip.Components;
 using Content.Shared.Verbs;
 using Robust.Shared.Utility;
+using Robust.Shared.Player; //DS14
 
 namespace Content.Shared.Strip;
 
@@ -33,7 +34,7 @@ public abstract class SharedStrippableSystem : EntitySystem
     [Dependency] private readonly SharedDoAfterSystem _doAfterSystem = default!;
     [Dependency] private readonly SharedHandsSystem _handsSystem = default!;
     [Dependency] private readonly SharedPopupSystem _popupSystem = default!;
-
+    [Dependency] private readonly ISharedPlayerManager _playerManager = default!; //DS14
     [Dependency] private readonly ISharedAdminLogManager _adminLogger = default!;
 
     public override void Initialize()
@@ -45,6 +46,7 @@ public abstract class SharedStrippableSystem : EntitySystem
 
         // BUI
         SubscribeLocalEvent<StrippableComponent, StrippingSlotButtonPressed>(OnStripButtonPressed);
+        SubscribeNetworkEvent<AnswerStripInsertInventoryMessage>(ReactOnAnswer); //DS14
 
         // DoAfters
         SubscribeLocalEvent<HandsComponent, DoAfterAttemptEvent<StrippableDoAfterEvent>>(OnStrippableDoAfterRunning);
@@ -416,7 +418,10 @@ public abstract class SharedStrippableSystem : EntitySystem
                                                         target,
                                                         target,
                                                         PopupType.Large);
-
+            if (_playerManager.TryGetSessionByEntity(target, out var targetNetUser)) //DS14-start
+            {
+                RaiseNetworkEvent(new StartStripInsertInventoryMessage(Identity.Name(_handsSystem.GetActiveItem(user)!.Value, EntityManager), Identity.Name(user, EntityManager), user.Owner), targetNetUser);
+            } //DS14-end
         }
 
         var prefix = stealth ? "stealthily " : "";
@@ -600,7 +605,13 @@ public abstract class SharedStrippableSystem : EntitySystem
     private void OnStrippableDoAfterFinished(Entity<HandsComponent> entity, ref StrippableDoAfterEvent ev)
     {
         if (ev.Cancelled)
+        {
+            if (ev.Target != null && _playerManager.TryGetSessionByEntity(ev.Target.Value, out var targetNetUser)) //DS14-start
+            {
+                RaiseNetworkEvent(new EndStripInsertInventoryMessage(), targetNetUser);
+            } //DS14-end
             return;
+        }
 
         DebugTools.Assert(entity.Owner == ev.User);
         DebugTools.Assert(ev.Target != null);
@@ -617,7 +628,13 @@ public abstract class SharedStrippableSystem : EntitySystem
         else
         {
             if (ev.InsertOrRemove)
+            {
                 StripInsertHand((entity.Owner, entity.Comp), ev.Target.Value, ev.Used.Value, ev.SlotOrHandName, ev.Args.Hidden);
+                if (_playerManager.TryGetSessionByEntity(ev.Target.Value, out var targetNetUser)) //DS14-start
+                {
+                    RaiseNetworkEvent(new EndStripInsertInventoryMessage(), targetNetUser);
+                } //DS14-end
+            }
             else
                 StripRemoveHand((entity.Owner, entity.Comp), ev.Target.Value, ev.Used.Value, ev.SlotOrHandName, ev.Args.Hidden);
         }
@@ -699,4 +716,38 @@ public abstract class SharedStrippableSystem : EntitySystem
 
         return !HasComp<BypassInteractionChecksComponent>(viewer);
     }
+
+    private void ReactOnAnswer(AnswerStripInsertInventoryMessage answer) //DS14-start
+    {
+        if (!answer.Answer)
+            return;
+        var uid = new EntityUid(answer.EUID);
+        if (!uid.IsValid())
+            return;
+        if (!EntityManager.EntityExists(uid))
+            return;
+        if (!EntityManager.TryGetComponent<DoAfterComponent>(uid, out var comp))
+            return;
+        foreach (var component in comp.DoAfters)
+        {
+            if (component.Value.Cancelled || component.Value.Completed)
+                continue;
+            if (!component.Value.Args.NeedHand)
+                continue;
+            if (component.Value.Args.Event is StrippableDoAfterEvent strippableEvent && !strippableEvent.InventoryOrHand)
+            {
+                _doAfterSystem.Cancel(component.Value.Id);
+                var doAfterArgs = new DoAfterArgs(EntityManager, component.Value.Args.User, TimeSpan.MinValue, component.Value.Args.Event, component.Value.Args.User, component.Value.Args.Target, component.Value.Args.Used)
+                {
+                    Hidden = false,
+                    AttemptFrequency = AttemptFrequency.EveryTick,
+                    BreakOnDamage = true,
+                    BreakOnMove = true,
+                    NeedHand = true,
+                    DuplicateCondition = DuplicateConditions.SameTool
+                };
+                _doAfterSystem.TryStartDoAfter(doAfterArgs);
+            }
+        }
+    } //DS14-end
 }
