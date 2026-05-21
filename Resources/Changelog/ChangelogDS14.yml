@@ -1638,3 +1638,10 @@ Entries:
     message: Гипоспрей Горлекса получил респрайт
   - type: Tweak
     message: У пистолет R8 "Гюрза" увеличен разброс
+- id: 152
+  author: CyberBobeks
+  time: '2026-05-21T08:12:55.431947+00:00'
+  pr: 1451
+  changes:
+  - type: Tweak
+    message: Актуализированы правила игровых серверов.
